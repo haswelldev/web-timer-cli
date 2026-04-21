@@ -21,9 +21,7 @@ wget -qO- https://raw.githubusercontent.com/haswelldev/web-timer-cli/main/instal
 ### Windows (PowerShell)
 
 ```powershell
-$os = "windows"; $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "amd64" }
-$url = "https://github.com/haswelldev/web-timer-cli/releases/latest/download/web-timer-cli-$os-$arch.exe"
-Invoke-WebRequest $url -OutFile "$env:USERPROFILE\AppData\Local\Microsoft\WindowsApps\web-timer-cli.exe"
+iex (Invoke-WebRequest https://raw.githubusercontent.com/haswelldev/web-timer-cli/main/install.ps1).Content
 ```
 
 ### From source
