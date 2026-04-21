@@ -538,13 +538,20 @@ func (m TimerModel) View() string {
 	alarmSecLabel := lipgloss.NewStyle().Foreground(colorOverlay0).Render("Sec")
 	alarmSecVal := fieldStyle(m.alarmSecsInput, m.focusField == FocusAlarmSecs)
 
-	alarmMinValX := startIndent + lipgloss.Width(bellIcon) + 1 + lipgloss.Width(alarmLabel) + 1 + lipgloss.Width(alarmMinLabel) + 1
+	alarmContent := bellIcon + " " + alarmLabel + " " + alarmMinLabel + " " + alarmMinVal + "    " + alarmSecLabel + " " + alarmSecVal
+	alarmVis := lipgloss.Width(alarmContent)
+	alarmMargin := (w - alarmVis) / 2
+	if alarmMargin < 0 {
+		alarmMargin = 0
+	}
+
+	alarmMinValX := alarmMargin + lipgloss.Width(bellIcon) + 1 + lipgloss.Width(alarmLabel) + 1 + lipgloss.Width(alarmMinLabel) + 1
 	alarmSecValX := alarmMinValX + lipgloss.Width(alarmMinVal) + 4 + lipgloss.Width(alarmSecLabel) + 1
 
 	newZones = append(newZones, zone{alarmMinValX, alarmMinValX + lipgloss.Width(alarmMinVal), alarmRow, "focus-alarm-min"})
 	newZones = append(newZones, zone{alarmSecValX, alarmSecValX + lipgloss.Width(alarmSecVal), alarmRow, "focus-alarm-sec"})
 
-	alarmLine := strings.Repeat(" ", startIndent) + bellIcon + " " + alarmLabel + " " + alarmMinLabel + " " + alarmMinVal + "    " + alarmSecLabel + " " + alarmSecVal
+	alarmLine := strings.Repeat(" ", alarmMargin) + alarmContent
 	lines = append(lines, alarmLine) // row 16
 	lines = append(lines, "")        // row 17
 	lines = append(lines, divider)   // row 18

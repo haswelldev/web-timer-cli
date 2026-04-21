@@ -203,7 +203,7 @@ func (m *TimerModel) CheckChannels() tea.Cmd {
 		if seconds > 0 {
 			m.alarmTriggered = false
 		}
-		if seconds == 0 && wasNonZero && !m.alarmTriggered {
+		if seconds == 0 && wasNonZero && !m.alarmTriggered && !m.personalAlarmFired {
 			m.alarmTriggered = true
 			cmds = append(cmds, playAlarmCmd(), func() tea.Msg {
 				return statusMsg("Timer finished!")
