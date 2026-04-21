@@ -1,0 +1,33 @@
+# Web Timer CLI Configuration
+# This file allows customization of the web-timer-cli application
+
+# Server Configuration
+server_url = "https://knix.ovh"
+server_path = "/timerHub"
+
+# Default Timer Settings
+default_minutes = 5
+default_seconds = 0
+
+# UI Configuration
+theme = "default"  # Options: default, dark, light
+show_milliseconds = false
+show_user_count = true
+
+# Audio Settings
+enable_sound = true
+sound_volume = 1.0  # 0.0 to 1.0
+
+# Platform-specific sound paths (optional, defaults used if not specified)
+# macos_sound_path = "/System/Library/Sounds/Glass.aiff"
+# linux_sound_path = "/usr/share/sounds/alsa/Front_Center.wav"
+# windows_sound_path = "C:\\Windows\\Media\\notify.wav"
+
+# Connection Settings
+auto_reconnect = true
+reconnect_interval = 5  # seconds
+connection_timeout = 10  # seconds
+
+# Room Settings
+auto_generate_room_id = true
+room_id_prefix = "room-"
