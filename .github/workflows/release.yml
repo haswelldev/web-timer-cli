@@ -45,5 +45,4 @@ jobs:
           VERSION="${GITHUB_SHA::7}"
           gh release create latest dist/* \
             --title "Latest build (${VERSION})" \
-            --notes "Automated build from commit ${GITHUB_SHA}" \
-            --prerelease
+            --notes "Automated build from commit ${GITHUB_SHA}"
