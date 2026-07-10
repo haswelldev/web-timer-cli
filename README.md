@@ -30,6 +30,18 @@ iex (Invoke-WebRequest https://raw.githubusercontent.com/haswelldev/web-timer-cl
 go install github.com/athened/web-timer-cli@latest
 ```
 
+### From a cloned repo (Makefile)
+
+Builds the current tree and installs system-wide to `/usr/local/bin` (uses `sudo` only if that directory isn't writable):
+
+```sh
+make install      # build + install
+make update       # rebuild + overwrite the installed binary
+make uninstall    # remove it
+```
+
+Override the location with `PREFIX`, e.g. `make install PREFIX=$HOME/.local`.
+
 ### Manual download
 
 Download the binary for your platform from the [latest release](https://github.com/haswelldev/web-timer-cli/releases/latest):
@@ -66,7 +78,7 @@ Share the room URL displayed in the header with others — they can join from th
 |-----|--------|
 | `Tab` | Focus timer input (Min → Sec → Alarm Min → Alarm Sec) |
 | `S` | Start timer with entered Min/Sec |
-| `Enter` | Start timer (when input focused) |
+| `Enter` | Start timer (when Min/Sec focused); confirm value only (when a Personal Alarm field is focused) |
 | `Space` | Pause / Resume |
 | `R` | Reset timer |
 | `+` / `=` | Add 30 seconds |
@@ -84,6 +96,8 @@ Set a personal alarm threshold (default 0 min 5 sec). When the shared timer tick
 ## Uninstall
 
 ```sh
+make uninstall            # if installed from a cloned repo
+# or, if installed via the install script:
 sudo rm /usr/local/bin/web-timer-cli
 ```
 

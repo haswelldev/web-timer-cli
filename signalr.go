@@ -1,14 +1,12 @@
 package main
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,15 +15,17 @@ import (
 )
 
 type SignalRClient struct {
-	conn         *websocket.Conn
-	roomID       string
-	baseURL      string
-	messageID    int
-	messageMutex sync.Mutex
-	handlers     map[string]func([]interface{})
-	closeChan    chan struct{}
-	connected    bool
-	connMutex    sync.RWMutex
+	conn          *websocket.Conn
+	roomID        string
+	baseURL       string
+	messageID     int
+	messageMutex  sync.Mutex
+	handlers      map[string]func([]interface{})
+	handlersMutex sync.RWMutex
+	closeChan     chan struct{}
+	connected     bool
+	connMutex     sync.RWMutex
+	writeMutex    sync.Mutex
 }
 
 type HandshakeRequest struct {
@@ -87,8 +87,44 @@ func (c *SignalRClient) Connect() error {
 	c.connMutex.Unlock()
 
 	go c.readMessages()
+	go c.keepAlive()
 
 	return c.joinRoom()
+}
+
+// keepAlive sends a SignalR ping (type 6) every 15 seconds so the server does
+// not drop the connection for inactivity. It exits when the connection closes.
+func (c *SignalRClient) keepAlive() {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	ping := append([]byte(`{"type":6}`), 0x1E)
+	for {
+		select {
+		case <-c.closeChan:
+			return
+		case <-ticker.C:
+			if err := c.writeFrame(ping); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// writeFrame serializes all writes to the websocket. gorilla/websocket forbids
+// concurrent writers, and both invoke() and keepAlive() write frames.
+func (c *SignalRClient) writeFrame(data []byte) error {
+	c.connMutex.RLock()
+	if !c.connected || c.conn == nil {
+		c.connMutex.RUnlock()
+		return fmt.Errorf("not connected")
+	}
+	conn := c.conn
+	c.connMutex.RUnlock()
+
+	c.writeMutex.Lock()
+	defer c.writeMutex.Unlock()
+	return conn.WriteMessage(websocket.TextMessage, data)
 }
 
 func (c *SignalRClient) dial() (*websocket.Conn, error) {
@@ -114,8 +150,7 @@ func (c *SignalRClient) dial() (*websocket.Conn, error) {
 		RawQuery: "id=" + url.QueryEscape(token),
 	}
 
-	dialer := websocket.DefaultDialer
-	dialer.HandshakeTimeout = 10 * time.Second
+	dialer := &websocket.Dialer{HandshakeTimeout: 10 * time.Second}
 
 	conn, _, err := dialer.Dial(wsURL.String(), nil)
 	if err != nil {
@@ -150,23 +185,15 @@ func (c *SignalRClient) joinRoom() error {
 }
 
 func (c *SignalRClient) invoke(method string, args []interface{}) error {
-	c.connMutex.RLock()
-	if !c.connected || c.conn == nil {
-		c.connMutex.RUnlock()
-		return fmt.Errorf("not connected")
-	}
-	conn := c.conn
-	c.connMutex.RUnlock()
-
 	c.messageMutex.Lock()
 	c.messageID++
 	id := c.messageID
 	c.messageMutex.Unlock()
 
 	msg := map[string]interface{}{
-		"type":      1,
-		"target":    method,
-		"arguments": args,
+		"type":         1,
+		"target":       method,
+		"arguments":    args,
 		"invocationId": fmt.Sprintf("%d", id),
 	}
 
@@ -175,10 +202,12 @@ func (c *SignalRClient) invoke(method string, args []interface{}) error {
 		return fmt.Errorf("marshal invoke: %w", err)
 	}
 
-	return conn.WriteMessage(websocket.TextMessage, append(data, 0x1E))
+	return c.writeFrame(append(data, 0x1E))
 }
 
 func (c *SignalRClient) RegisterHandler(target string, handler func([]interface{})) {
+	c.handlersMutex.Lock()
+	defer c.handlersMutex.Unlock()
 	c.handlers[target] = handler
 }
 
@@ -245,18 +274,10 @@ func (c *SignalRClient) processRecord(data []byte) {
 	switch int(msgType) {
 	case 1:
 		c.handleInvocation(msg)
-	case 2:
-		c.handleStreamItem(msg)
-	case 3:
-		c.handleCompletion(msg)
-	case 4:
-		c.handleStreamInvocation(msg)
-	case 5:
-		c.handleCancelInvocation(msg)
-	case 6:
-		c.handlePing()
 	case 7:
 		c.handleClose(msg)
+		// 2 (stream item), 3 (completion), 4 (stream invocation),
+		// 5 (cancel invocation) and 6 (ping) are not used by this client.
 	}
 }
 
@@ -264,24 +285,12 @@ func (c *SignalRClient) handleInvocation(msg map[string]interface{}) {
 	target, _ := msg["target"].(string)
 	arguments, _ := msg["arguments"].([]interface{})
 
-	if handler, exists := c.handlers[target]; exists {
+	c.handlersMutex.RLock()
+	handler, exists := c.handlers[target]
+	c.handlersMutex.RUnlock()
+	if exists {
 		handler(arguments)
 	}
-}
-
-func (c *SignalRClient) handleStreamItem(msg map[string]interface{}) {
-}
-
-func (c *SignalRClient) handleCompletion(msg map[string]interface{}) {
-}
-
-func (c *SignalRClient) handleStreamInvocation(msg map[string]interface{}) {
-}
-
-func (c *SignalRClient) handleCancelInvocation(msg map[string]interface{}) {
-}
-
-func (c *SignalRClient) handlePing() {
 }
 
 func (c *SignalRClient) handleClose(msg map[string]interface{}) {
@@ -332,42 +341,4 @@ func (c *SignalRClient) IsConnected() bool {
 	c.connMutex.RLock()
 	defer c.connMutex.RUnlock()
 	return c.connected
-}
-
-func decodeHandshake(data string) (map[string]interface{}, error) {
-	parts := strings.Split(data, ";")
-	if len(parts) < 1 {
-		return nil, fmt.Errorf("invalid handshake format")
-	}
-
-	result := make(map[string]interface{})
-	for _, part := range parts {
-		kv := strings.SplitN(part, "=", 2)
-		if len(kv) == 2 {
-			result[kv[0]] = kv[1]
-		}
-	}
-
-	return result, nil
-}
-
-func parseSignalRMessage(data string) (map[string]interface{}, error) {
-	var msg map[string]interface{}
-	err := json.Unmarshal([]byte(data), &msg)
-	return msg, err
-}
-
-func decodeBase64(encoded string) ([]byte, error) {
-	return base64.StdEncoding.DecodeString(encoded)
-}
-
-func parseInt(value interface{}) (int, error) {
-	switch v := value.(type) {
-	case float64:
-		return int(v), nil
-	case string:
-		return strconv.Atoi(v)
-	default:
-		return 0, fmt.Errorf("cannot convert to int")
-	}
 }

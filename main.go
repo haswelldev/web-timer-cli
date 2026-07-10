@@ -13,14 +13,15 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// Version is injected at build time via -ldflags "-X main.Version=...".
+var Version = "dev"
+
 // ── Message types ─────────────────────────────────────────────────────────────
 
 type tickMsg time.Time
 type connectionStateMsg ConnectionState
-type timeUpdateMsg int
-type timerStateMsg TimerState
-type userCountMsg int
 type statusMsg string
+type connectFailedMsg struct{ err error }
 
 // ── Color palette (Catppuccin Mocha) ──────────────────────────────────────────
 
@@ -42,7 +43,7 @@ var (
 
 type zone struct {
 	x1, x2, y int
-	action     string
+	action    string
 }
 
 var viewZones []zone
@@ -92,11 +93,11 @@ func (m TimerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					case "pause":
 						if m.connectionState == Connected {
-							return m, togglePauseCmd(m)
+							return m.optimisticTogglePause()
 						}
 					case "reset":
 						if m.connectionState == Connected {
-							return m, resetTimerCmd(m)
+							return m.optimisticReset()
 						}
 					case "plus30":
 						if m.connectionState == Connected {
@@ -104,7 +105,7 @@ func (m TimerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					case "start":
 						if m.connectionState == Connected {
-							return m, startTimerCmd(m)
+							return m.optimisticStart()
 						}
 					}
 				}
@@ -171,9 +172,21 @@ func (m TimerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			case k == "enter":
+				// Enter on the personal-alarm fields only confirms the value;
+				// it must NOT start/restart the shared timer.
+				switch m.focusField {
+				case FocusAlarmMins, FocusAlarmSecs:
+					m.focusField = FocusNone
+					mins, secs := 0, 0
+					fmt.Sscanf(m.alarmMinsInput, "%d", &mins)
+					fmt.Sscanf(m.alarmSecsInput, "%d", &secs)
+					m.personalAlarmFired = false
+					m.SetStatusMessage(fmt.Sprintf("Personal alarm set to %dm %02ds", mins, secs))
+					return m, nil
+				}
 				m.focusField = FocusNone
 				if m.connectionState == Connected {
-					return m, startTimerCmd(m)
+					return m.optimisticStart()
 				}
 				return m, nil
 			case k == "esc" || k == "ctrl+c":
@@ -198,17 +211,17 @@ func (m TimerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "s":
 			if m.connectionState == Connected {
-				return m, startTimerCmd(m)
+				return m.optimisticStart()
 			}
 
 		case " ":
 			if m.connectionState == Connected {
-				return m, togglePauseCmd(m)
+				return m.optimisticTogglePause()
 			}
 
 		case "r":
 			if m.connectionState == Connected {
-				return m, resetTimerCmd(m)
+				return m.optimisticReset()
 			}
 
 		case "+", "=":
@@ -223,6 +236,23 @@ func (m TimerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tickMsg:
+		// Detect a dropped socket: the client reports connected but the
+		// underlying websocket has closed.
+		if m.connectionState == Connected && m.signalRClient != nil && !m.signalRClient.IsConnected() {
+			m.SetConnectionState(Reconnecting)
+			m.SetStatusMessage("Connection lost — reconnecting…")
+			return m, tea.Sequence(tickCmd(), connectToRoomCmd(m))
+		}
+		// Retry countdown after a disconnect.
+		if m.connectionState == Disconnected && m.shouldReconnect {
+			if m.reconnectCountdown > 0 {
+				m.reconnectCountdown--
+			} else {
+				m.SetConnectionState(Reconnecting)
+				m.SetStatusMessage("Reconnecting…")
+				return m, tea.Sequence(tickCmd(), connectToRoomCmd(m))
+			}
+		}
 		if cmd := m.CheckChannels(); cmd != nil {
 			return m, tea.Sequence(tickCmd(), cmd)
 		}
@@ -231,23 +261,18 @@ func (m TimerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case connectionStateMsg:
 		m.SetConnectionState(ConnectionState(msg))
 		if ConnectionState(msg) == Connected {
+			m.shouldReconnect = true
 			m.SetStatusMessage("Connected — press s to start timer")
 		} else if ConnectionState(msg) == Connecting {
 			m.SetStatusMessage("Connecting to room…")
 		}
 		return m, nil
 
-	case timeUpdateMsg:
-		m.SetTime(int(msg))
-		m.alarmTriggered = false
-		return m, nil
-
-	case timerStateMsg:
-		m.SetTimerState(TimerState(msg))
-		return m, nil
-
-	case userCountMsg:
-		m.SetUserCount(int(msg))
+	case connectFailedMsg:
+		m.SetConnectionState(Disconnected)
+		m.SetStatusMessage(fmt.Sprintf("Connection failed: %v — retrying…", msg.err))
+		m.shouldReconnect = true
+		m.reconnectCountdown = 5
 		return m, nil
 
 	case statusMsg:
@@ -271,7 +296,7 @@ func connectToRoomCmd(model TimerModel) tea.Cmd {
 		func() tea.Msg {
 			client := NewSignalRClient(model.baseURL, model.roomID)
 			if err := client.Connect(); err != nil {
-				return statusMsg(fmt.Sprintf("Connection failed: %v", err))
+				return connectFailedMsg{err: err}
 			}
 			return signalRConnectedMsg{client: client}
 		},
@@ -279,6 +304,31 @@ func connectToRoomCmd(model TimerModel) tea.Cmd {
 }
 
 type signalRConnectedMsg struct{ client *SignalRClient }
+
+// optimisticStart/Reset/TogglePause update the local timer state immediately for
+// responsive UI feedback; the authoritative value still arrives from the server.
+
+func (m TimerModel) optimisticStart() (tea.Model, tea.Cmd) {
+	m.timerState = Running
+	m.lastTimeUpdate = time.Now()
+	return m, startTimerCmd(m)
+}
+
+func (m TimerModel) optimisticReset() (tea.Model, tea.Cmd) {
+	m.timerState = Stopped
+	return m, resetTimerCmd(m)
+}
+
+func (m TimerModel) optimisticTogglePause() (tea.Model, tea.Cmd) {
+	switch m.timerState {
+	case Running:
+		m.timerState = Paused
+	case Paused:
+		m.timerState = Running
+		m.lastTimeUpdate = time.Now()
+	}
+	return m, togglePauseCmd(m)
+}
 
 func startTimerCmd(model TimerModel) tea.Cmd {
 	return func() tea.Msg {
@@ -474,7 +524,7 @@ func (m TimerModel) View() string {
 	}
 
 	lines = append(lines, strings.Repeat(" ", brsMargin)+buttonRowStr) // row 12
-	lines = append(lines, "")                                           // row 13
+	lines = append(lines, "")                                          // row 13
 
 	// ── Start row ─────────────────────────────────────────────────────────────
 	startRow := len(lines) // row 14
@@ -604,6 +654,11 @@ func main() {
 	baseURL := "https://knix.ovh"
 	roomID := ""
 	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "-v", "--version", "version":
+			fmt.Printf("web-timer-cli %s\n", Version)
+			return
+		}
 		baseURL, roomID = parseArg(os.Args[1])
 	}
 

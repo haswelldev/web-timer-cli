@@ -36,30 +36,29 @@ const (
 )
 
 type TimerModel struct {
-	roomID            string
-	baseURL           string
-	roomURL           string
-	totalSeconds      int
-	timerState        TimerState
-	connectionState   ConnectionState
-	userCount         int
-	minutesInput      string
-	secondsInput      string
-	focusField        FocusField
-	statusMessage     string
-	alarmTriggered    bool
-	lastTick          time.Time
-	alarmSoundPlaying bool
-	alarmMinsInput    string
-	alarmSecsInput    string
+	roomID             string
+	baseURL            string
+	totalSeconds       int
+	timerState         TimerState
+	connectionState    ConnectionState
+	userCount          int
+	minutesInput       string
+	secondsInput       string
+	focusField         FocusField
+	statusMessage      string
+	alarmTriggered     bool
+	lastTimeUpdate     time.Time
+	alarmMinsInput     string
+	alarmSecsInput     string
 	personalAlarmFired bool
-	signalRClient     *SignalRClient
-	timeChan          chan int
-	stateChan         chan TimerState
-	userCountChan     chan int
-	messageChan       chan string
-	width             int
-	height            int
+	shouldReconnect    bool
+	reconnectCountdown int
+	signalRClient      *SignalRClient
+	timeChan           chan int
+	userCountChan      chan int
+	messageChan        chan string
+	width              int
+	height             int
 }
 
 func NewTimerModel(baseURL, roomID string) *TimerModel {
@@ -69,7 +68,6 @@ func NewTimerModel(baseURL, roomID string) *TimerModel {
 	return &TimerModel{
 		roomID:          roomID,
 		baseURL:         baseURL,
-		roomURL:         fmt.Sprintf("%s/%s", baseURL, roomID),
 		totalSeconds:    0,
 		timerState:      Stopped,
 		connectionState: Disconnected,
@@ -78,10 +76,9 @@ func NewTimerModel(baseURL, roomID string) *TimerModel {
 		secondsInput:    "0",
 		alarmMinsInput:  "0",
 		alarmSecsInput:  "5",
-		statusMessage:   "Press Enter to join room, 'q' to quit",
+		statusMessage:   "Connecting to room…",
 		alarmTriggered:  false,
 		timeChan:        make(chan int, 10),
-		stateChan:       make(chan TimerState, 10),
 		userCountChan:   make(chan int, 10),
 		messageChan:     make(chan string, 10),
 		width:           80,
@@ -139,14 +136,6 @@ func (m *TimerModel) SetStatusMessage(msg string) {
 	m.statusMessage = msg
 }
 
-func (m *TimerModel) GetRoomID() string {
-	return m.roomID
-}
-
-func (m *TimerModel) GetRoomURL() string {
-	return m.roomURL
-}
-
 func (m *TimerModel) SetupSignalRHandlers() {
 	if m.signalRClient == nil {
 		return
@@ -198,8 +187,21 @@ func (m *TimerModel) CheckChannels() tea.Cmd {
 
 	select {
 	case seconds := <-m.timeChan:
-		wasNonZero := m.totalSeconds > 0
+		prevSeconds := m.totalSeconds
+		wasNonZero := prevSeconds > 0
 		m.SetTime(seconds)
+
+		// Infer timer state from the stream of time updates (the server sends
+		// no explicit state event): counting down means Running, zero means
+		// Stopped, a stalled stream is treated as Paused below.
+		switch {
+		case seconds == 0:
+			m.timerState = Stopped
+		case seconds < prevSeconds || prevSeconds == 0:
+			m.timerState = Running
+		}
+		m.lastTimeUpdate = time.Now()
+
 		if seconds > 0 {
 			m.alarmTriggered = false
 		}
@@ -227,10 +229,10 @@ func (m *TimerModel) CheckChannels() tea.Cmd {
 	default:
 	}
 
-	select {
-	case state := <-m.stateChan:
-		m.SetTimerState(state)
-	default:
+	// If the timer was counting down but the update stream has stalled, the
+	// shared timer is paused.
+	if m.timerState == Running && m.totalSeconds > 0 && time.Since(m.lastTimeUpdate) > 2*time.Second {
+		m.timerState = Paused
 	}
 
 	select {

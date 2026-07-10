@@ -2,7 +2,71 @@ package main
 
 import (
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
+
+// Enter while editing a personal-alarm field must NOT start/restart the timer.
+func TestEnterOnAlarmFieldDoesNotStartTimer(t *testing.T) {
+	for _, field := range []FocusField{FocusAlarmMins, FocusAlarmSecs} {
+		model := NewTimerModel("https://knix.ovh", "test-room")
+		model.SetConnectionState(Connected)
+		model.focusField = field
+
+		next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		nm := next.(TimerModel)
+
+		if nm.focusField != FocusNone {
+			t.Errorf("field %v: expected focus cleared, got %v", field, nm.focusField)
+		}
+		if cmd != nil {
+			t.Errorf("field %v: expected no command (timer must not start), got one", field)
+		}
+	}
+}
+
+// Enter while editing the timer Min/Sec fields should still start the timer.
+func TestEnterOnTimerFieldStartsTimer(t *testing.T) {
+	model := NewTimerModel("https://knix.ovh", "test-room")
+	model.SetConnectionState(Connected)
+	model.focusField = FocusMinutes
+
+	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	nm := next.(TimerModel)
+
+	if nm.focusField != FocusNone {
+		t.Errorf("expected focus cleared, got %v", nm.focusField)
+	}
+	if cmd == nil {
+		t.Error("expected a start-timer command, got nil")
+	}
+	if nm.timerState != Running {
+		t.Errorf("expected optimistic Running state, got %v", nm.timerState)
+	}
+}
+
+// The timer state is inferred from the stream of time updates.
+func TestTimerStateInference(t *testing.T) {
+	model := NewTimerModel("https://knix.ovh", "test-room")
+
+	model.timeChan <- 100
+	model.CheckChannels()
+	if model.timerState != Running {
+		t.Errorf("expected Running after first tick, got %v", model.timerState)
+	}
+
+	model.timeChan <- 95
+	model.CheckChannels()
+	if model.timerState != Running {
+		t.Errorf("expected Running while counting down, got %v", model.timerState)
+	}
+
+	model.timeChan <- 0
+	model.CheckChannels()
+	if model.timerState != Stopped {
+		t.Errorf("expected Stopped at zero, got %v", model.timerState)
+	}
+}
 
 func TestTimerModelFormatTimer(t *testing.T) {
 	model := NewTimerModel("https://knix.ovh", "test-room")
